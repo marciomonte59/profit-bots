@@ -1170,50 +1170,104 @@ def save_estrategias(data):
 
 
 def escolher_estrategia_local(leitura_tecnica, sentimento_info):
-    """GPT-4-omni escolhe a melhor estrategia com base na leitura e estrategias cadastradas."""
+    """
+    Cerebro do ProfitAnalise — escolhe a melhor estrategia automaticamente.
+
+    Prioridade:
+    1. IFR visivel + extremo (<30 ou >70) → Double Check IFR
+    2. IFR visivel + neutro + pullback VWAP → Pullback VWAP
+    3. Gap + IFR extremo → Sweep de Liquidez
+    4. 3+ medias alinhadas + candle expressivo → Modo Expansao
+    5. Medias mistas → Modo Retracao
+    6. EMA9 e MA20 a 45° → Alinhamento 9/20
+    7. Candle expressivo em nivel historico → Memoria Kitta
+    8. Nivel horizontal claro → Suporte e Resistencia
+    9. IFR NAO visivel → NUNCA usar Double Check IFR
+    """
+    import re as _re
     try:
         ests = load_estrategias()
         ests_extra = ""
         if ests:
-            ests_extra = "\n\nESTRATÉGIAS PERSONALIZADAS CADASTRADAS:\n"
+            ests_extra = "\n\nESTRATEGIAS CADASTRADAS (manual do trader):\n"
             for nome, conteudo in ests.items():
-                ests_extra += f"\n{nome}:\n{conteudo}\n"
+                ests_extra += f"\n--- {nome} ---\n{conteudo[:400]}\n"
 
         classif = sentimento_info.get("classificacao", "NEUTRO")
         score   = sentimento_info.get("score", 0)
 
-        prompt = f"""Você é um trader expert. Analise a leitura técnica e escolha a melhor estratégia.
+        # Detectar IFR na leitura
+        tem_ifr = bool(_re.search(r"IFR|RSI", leitura_tecnica, _re.IGNORECASE))
+        val_ifr = 50
+        m_ifr = _re.search(r"IFR[:\s]+(\d+)", leitura_tecnica, _re.IGNORECASE)
+        if m_ifr:
+            try:
+                val_ifr = int(m_ifr.group(1))
+            except Exception:
+                pass
+        ifr_extremo = val_ifr < 30 or val_ifr > 70
 
-LEITURA TÉCNICA:
-{leitura_tecnica}
+        # Detectar alinhamento das medias
+        acima  = len(_re.findall(r"ACIMA",  leitura_tecnica, _re.IGNORECASE))
+        abaixo = len(_re.findall(r"ABAIXO", leitura_tecnica, _re.IGNORECASE))
+        medias_alinhadas = acima >= 3 or abaixo >= 3
 
-SENTIMENTO DO MERCADO: {classif} (score: {score:+d})
+        # Detectar gap
+        tem_gap = bool(_re.search(r"gap|abertura.*distante|abre.*longe", leitura_tecnica, _re.IGNORECASE))
 
-ESTRATÉGIAS DISPONÍVEIS:
-{ESTRATEGIAS_BASE}{ests_extra}
+        ifr_str = f"SIM — valor: {val_ifr}" if tem_ifr else "NAO visivel — NAO usar Double Check IFR"
+        alinhadas_str = "SIM" if medias_alinhadas else "NAO"
+        gap_str = "SIM" if tem_gap else "NAO"
 
-Responda em JSON:
-{{
-  "estrategia_nome": "nome da estratégia",
-  "estrategia_conteudo": "regras resumidas da estratégia escolhida",
-  "criterios_atendidos": "quais critérios estão presentes no gráfico",
-  "confianca": "Alta|Média|Baixa"
-}}"""
+        prompt = (
+            "Voce e o cerebro de um sistema de trading profissional.\n"
+            "Analise a leitura tecnica e escolha UMA estrategia. Siga a logica abaixo OBRIGATORIAMENTE.\n\n"
+            "=== LEITURA TECNICA DO GRAFICO ===\n"
+            f"{leitura_tecnica}\n\n"
+            "=== CONTEXTO DE MERCADO ===\n"
+            f"Sentimento: {classif} (score: {score:+d})\n"
+            f"IFR visivel no grafico: {ifr_str}\n"
+            f"3+ medias alinhadas: {alinhadas_str}\n"
+            f"Gap de abertura: {gap_str}\n\n"
+            "=== REGRAS DE ESCOLHA (siga NESTA ORDEM) ===\n"
+            "1. IFR VISIVEL + valor <30 ou >70 = Double Check IFR\n"
+            "2. IFR VISIVEL + valor 40-60 + VWAP no grafico = Pullback VWAP\n"
+            "3. GAP de abertura + IFR extremo = Sweep de Liquidez\n"
+            "4. 3+ medias alinhadas + candle expressivo = Modo Expansao\n"
+            "5. Medias mistas (algumas acima, outras abaixo) = Modo Retracao\n"
+            "6. EMA9 e MA20 alinhadas com inclinacao = Alinhamento 9/20\n"
+            "7. Candle grande em nivel historico = Memoria Kitta\n"
+            "8. Nivel horizontal claro = Suporte e Resistencia\n"
+            "9. Se IFR NAO VISIVEL = NUNCA escolher Double Check IFR\n\n"
+            "=== ESTRATEGIAS DISPONIVEIS ===\n"
+            f"{ESTRATEGIAS_BASE}{ests_extra}\n\n"
+            "Responda APENAS em JSON valido:\n"
+            "{\n"
+            '  "estrategia_nome": "nome exato da estrategia escolhida",\n'
+            '  "estrategia_conteudo": "regras especificas para ESTE grafico em 3-4 linhas",\n'
+            '  "criterios_atendidos": "criterios do grafico que justificam a escolha",\n'
+            '  "confianca": "Alta|Media|Baixa",\n'
+            f'  "ifr_ativou_double_check": {str(tem_ifr and ifr_extremo).lower()}\n'
+            "}"
+        )
 
-        resp = gpt4o(prompt)
+        resp = chamar_ia_rodizio(prompt)
         if resp:
             resp = resp.strip()
             if resp.startswith("```"):
-                resp = re.sub(r"```[a-z]*\n?", "", resp).strip().rstrip("```").strip()
-            return json.loads(resp)
+                resp = _re.sub(r"```[a-z]*\n?", "", resp).strip().rstrip("`").strip()
+            m_json = _re.search(r"\{.*\}", resp, _re.DOTALL)
+            if m_json:
+                return json.loads(m_json.group(0))
     except Exception as e:
         logger.error(f"escolher_estrategia_local: {e}")
 
     return {
-        "estrategia_nome": "Order Block + VAR",
-        "estrategia_conteudo": "Barra fecha fora do OB. VAR confirmado. Entrada na extremidade. Stop 150pts.",
-        "criterios_atendidos": "N/A",
-        "confianca": "Média"
+        "estrategia_nome": "Alinhamento 9/20 — Tendencia",
+        "estrategia_conteudo": "EMA9 e MA20 alinhadas com inclinacao ~45 graus. Entrada no pullback. Stop 150pts.",
+        "criterios_atendidos": "fallback padrao",
+        "confianca": "Media",
+        "ifr_ativou_double_check": False
     }
 
 
