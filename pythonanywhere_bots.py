@@ -2268,31 +2268,42 @@ def webhook_analise():
                     aviso_sem_imagem = "\n⚠️ Nenhuma imagem recebida - analise baseada apenas em texto."
 
                 prompt_tecnica = (
-                    "Voce e um sistema de visao computacional analisando uma captura de tela de plataforma de trading.\n"
-                    "Sua unica tarefa agora e TRANSCREVER o que esta visivel na tela - como um OCR humano.\n\n"
-                    "TRANSCREVA EXATAMENTE o que aparece (nao interprete, nao deduza, so leia):\n\n"
-                    "TICKER/ATIVO: copie o codigo ou nome exato do cabecalho, titulo ou legenda da janela\n"
-                    "PRECO: o numero mais destacado na tela (ultimo negocio, bid, ask ou fechamento)\n"
-                    "TIMEFRAME: o intervalo do grafico (ex: 5m, 15m, 1h, D)\n"
-                    "MAXIMA DO DIA: se visivel, o valor exato\n"
-                    "MINIMA DO DIA: se visivel, o valor exato\n"
-                    "VOLUME: numero exato visivel no indicador de volume\n"
-                    "MEDIAS VISIVEIS: liste cada media movel visivel e onde esta em relacao ao preco\n"
-                    "  - EMA9 (geralmente vermelha): acima ou abaixo do preco?\n"
-                    "  - MA20 (geralmente azul): acima ou abaixo?\n"
-                    "  - MA200 (geralmente preta): acima ou abaixo?\n"
-                    "  - VWAP: acima ou abaixo?\n"
-                    "ULTIMO CANDLE: cor (verde/vermelho), proporcao corpo vs sombra\n"
-                    "SUPORTE: nivel de preco visivel mais proximo abaixo\n"
-                    "RESISTENCIA: nivel de preco visivel mais proximo acima\n"
-                    "OUTROS INDICADORES: IFR, MACD, Bandas - se visivel, o valor\n\n"
-                    + (f"O usuario informou: {texto_extra}\n\n" if texto_extra else "") +
+                    "Voce e um especialista em leitura de graficos de trading com visao computacional apurada.\n"
+                    "Analise a imagem inteira com ZOOM MENTAL — examine cada regiao: cabecalho, eixo de preco, legenda das medias, painel de volume, candles.\n\n"
+                    "LEIA E TRANSCREVA EXATAMENTE, numero por numero, o que esta visivel:\n\n"
+                    "ATIVO: nome ou codigo exato — leia o cabecalho/titulo da janela (ex: WINM26, PETR4, IBOV, EUR/USD, BTC/USD)\n"
+                    "TIMEFRAME: intervalo do grafico (ex: 5min, 15min, 1h, D, 1S) — leia o seletor de periodo\n"
+                    "PRECO ATUAL: numero exato no eixo direito ou label flutuante (ex: 131.250)\n"
+                    "ABERTURA: se visivel no OHLC ou cabecalho\n"
+                    "MAXIMA: valor exato visivel\n"
+                    "MINIMA: valor exato visivel\n"
+                    "FECHAMENTO ANTERIOR: se visivel\n"
+                    "VARIACAO: percentual exato (ex: +0.35% ou -1.2%)\n\n"
+                    "MEDIAS MOVEIS — leia o valor numerico exato de cada legenda colorida:\n"
+                    "  EMA9 (linha vermelha fina): valor numerico exato | posicao: ACIMA ou ABAIXO do preco\n"
+                    "  MA20 (linha azul): valor numerico exato | posicao: ACIMA ou ABAIXO do preco\n"
+                    "  MA200 (linha preta): valor numerico exato | posicao: ACIMA ou ABAIXO do preco\n"
+                    "  VWAP (linha tracejada/colorida): valor numerico exato | posicao: ACIMA ou ABAIXO do preco\n"
+                    "  OUTRAS MEDIAS: se houver, nome e valor\n\n"
+                    "ULTIMO CANDLE (o mais recente, direita do grafico):\n"
+                    "  - Cor: VERDE (alta) ou VERMELHO (baixa)\n"
+                    "  - Tamanho do corpo: GRANDE (>70% do range) / MEDIO / PEQUENO / DOJI (<20%)\n"
+                    "  - Sombra superior: tem? proporcional ao corpo?\n"
+                    "  - Sombra inferior: tem? proporcional ao corpo?\n"
+                    "  - Padrao reconhecivel: martelo, enforcado, engolfo, estrela, doji, etc\n\n"
+                    "VOLUME: numero exato do ultimo candle | comparado com media: ALTO / NORMAL / BAIXO\n"
+                    "SUPORTE mais proximo abaixo do preco: nivel exato visivel (linha horizontal, fundo anterior)\n"
+                    "RESISTENCIA mais proxima acima do preco: nivel exato visivel\n"
+                    "IFR/RSI: valor numerico se houver painel separado | nivel: sobrecomprado(>70) / neutro / sobrevendido(<30)\n"
+                    "OUTROS INDICADORES: MACD, Bandas de Bollinger, estocástico — se visivel, descreva\n\n"
+                    + (f"Informacao adicional do usuario: {texto_extra}\n\n" if texto_extra else "") +
                     "REGRAS ABSOLUTAS:\n"
-                    "- NUNCA escreva 'nao identificado' - se nao ver, escreva 'nao visivel na imagem'\n"
-                    "- NUNCA invente numeros - use so o que esta escrito na tela\n"
-                    "- NUNCA generalize - 'preco em torno de X' e errado, escreva o numero exato\n"
-                    "- Se for ativo internacional (ex: S&P, EUR/USD, BTC), identifique normalmente\n"
-                    "- Se for plataforma desconhecida, leia os numeros e tente identificar o ativo pelo nivel de preco"
+                    "- Leia TODOS os numeros das legendas das medias — eles estao escritos na tela\n"
+                    "- NUNCA invente ou estime valores — se nao conseguir ler, escreva: nao legivel na imagem\n"
+                    "- NUNCA escreva 'aproximadamente' ou 'em torno de' — numero exato ou nao legivel\n"
+                    "- Se o grafico for de ativo internacional (S&P, DXY, BTC, EUR/USD), identifique normalmente\n"
+                    "- ACIMA = media esta acima do preco atual | ABAIXO = media esta abaixo do preco atual\n"
+                    "- Se a imagem estiver cortada ou escura, descreva o que da pra ver e sinalize"
                 )
 
                 # LEITURA DA IMAGEM - Rodízio sequencial
@@ -2475,33 +2486,53 @@ def webhook_analise():
                 # Carregar memoria de conversas anteriores
                 memoria_anterior = carregar_memoria(chat_id)
 
-                prompt_sinal = f"""Voce e um trader experiente. Responda em formato fixo abaixo - sem adicionar nada fora do formato.
+                prompt_sinal = f"""Voce e um trader profissional de day trade. Analise e responda EXATAMENTE no formato abaixo, sem adicionar nada fora dele.
 
-[CONTEXTO INTERNO - NAO REPETIR NA RESPOSTA]
-Estrategia de referencia ({est.get('estrategia_nome','N/A')}): {est.get('estrategia_conteudo','')}
-Historico: {memoria_anterior if memoria_anterior else 'primeira analise'}
-Noticias: {noticias if noticias else 'sem noticias relevantes'}
-Dados APIs: {dados_reais if dados_reais else 'indisponivel'}
-[FIM CONTEXTO INTERNO]
-
-LEITURA DO GRAFICO (use isso como base visual):
+=== DADOS DO GRAFICO ===
 {leitura_tecnica}
 
-FORMATO OBRIGATORIO DA RESPOSTA - siga linha por linha, sem desviar:
+=== DADOS REAIS DE MERCADO ===
+{dados_reais if dados_reais else "indisponivel — usar dados do grafico"}
 
-Linha 1: [ATIVO] | [PRECO] | [TIMEFRAME]
-Linha 2: EMA9 [ACIMA/ABAIXO] | MA20 [ACIMA/ABAIXO] | MA200 [ACIMA/ABAIXO] | VWAP [ACIMA/ABAIXO]
-Linha 3: Candle [verde/vermelho], [corpo grande/pequeno/doji], [sombra superior/inferior relevante ou nao]
-Linha 4: Suporte: [numero] | Resistencia: [numero]
-Linha 5: Tendencia: [ALTA/BAIXA/LATERAL] - [motivo em 1 frase curta]
-Linha 6: [COMPRA/VENDA/AGUARDA] - Entrada: [numero] | Stop: [numero] | Alvo: [numero]
-Linha 7: [apenas o preco de entrada, sem texto]
+=== CONTEXTO MACRO ===
+{noticias if noticias else "sem noticias relevantes no momento"}
 
-REGRAS:
-- ACIMA = media maior que preco | ABAIXO = media menor que preco - nunca inverta
-- Sem emojis, sem asteriscos, sem markdown
-- Sem mencionar estrategia, sem citar 'com base em', sem frases de chatbot
-- Se nao tiver certeza de um valor, use o dado da API, nao invente"""
+=== ESTRATEGIA DE REFERENCIA ===
+{est.get("estrategia_nome","N/A")}: {est.get("estrategia_conteudo","")[:300]}
+
+=== HISTORICO ===
+{memoria_anterior if memoria_anterior else "primeira analise desta sessao"}
+
+INSTRUCOES DE ANALISE (siga esta logica, nao repita na resposta):
+1. Identifique o ativo e preco EXATO da leitura — nunca use valor diferente
+2. Verifique posicao de CADA media: preco ACIMA ou ABAIXO — nunca inverta
+3. Avalie o ultimo candle: cor, tamanho, sombras — isso define forca ou fraqueza
+4. Verifique confluencia: quantas medias apontam para o mesmo lado?
+   - 3 ou 4 medias alinhadas = sinal forte
+   - 2 medias = sinal moderado
+   - Medias mistas = AGUARDA
+5. Defina suporte e resistencia pelos niveis visiveis no grafico
+6. Calcule entrada, stop e alvo baseado na estrategia e nos niveis reais
+   - Stop maximo: 150 pontos para WIN/WDO | 2% para acoes
+   - Alvo minimo: risco/retorno 1:2 ou melhor
+7. Se nao houver confluencia clara = AGUARDA (nunca force sinal)
+
+FORMATO OBRIGATORIO (responda APENAS isso, linha por linha):
+
+[ATIVO] | [PRECO EXATO] | [TIMEFRAME]
+EMA9 [ACIMA/ABAIXO] | MA20 [ACIMA/ABAIXO] | MA200 [ACIMA/ABAIXO] | VWAP [ACIMA/ABAIXO]
+Candle: [COR] | [TAMANHO] | [PADRAO se houver]
+Suporte: [numero] | Resistencia: [numero]
+Tendencia: [ALTA/BAIXA/LATERAL] — [motivo objetivo em 1 linha]
+[COMPRA/VENDA/AGUARDA] — Entrada: [numero] | Stop: [numero] | Alvo 1: [numero] | Alvo 2: [numero]
+[apenas o numero da entrada na ultima linha — para copiar rapido]
+
+REGRAS DE OURO:
+- Preco MAIOR que media = preco ACIMA da media (nao inverta)
+- NUNCA use o mesmo valor para entrada e stop
+- NUNCA force COMPRA ou VENDA sem confluencia de pelo menos 2 medias
+- NUNCA adicione texto fora do formato — zero explicacoes, zero emojis, zero markdown
+- Se a imagem nao permitir leitura precisa = responda: IMAGEM ILEGIVEL — reenvie com melhor resolucao"""
 
                 resp  = gemini(prompt_sinal) or chamar_ia_rodizio(prompt_sinal) or gpt4o(prompt_sinal)
                 sinal = extrair_sinal(resp)
