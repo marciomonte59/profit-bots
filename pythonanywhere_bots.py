@@ -222,6 +222,115 @@ def calcular_indicadores_yahoo(ticker, interval="5m"):
         logger.error(f"calcular_indicadores_yahoo({ticker}): {e}")
         return {}
 
+
+# ── Módulo de Cálculos Matemáticos ────────────────────────────────────────────
+
+def calcular_fibonacci(preco_min, preco_max):
+    """Calcula níveis de Fibonacci entre mínima e máxima."""
+    diff = preco_max - preco_min
+    niveis = {
+        "0.0%":   preco_max,
+        "23.6%":  preco_max - diff * 0.236,
+        "38.2%":  preco_max - diff * 0.382,
+        "50.0%":  preco_max - diff * 0.500,
+        "61.8%":  preco_max - diff * 0.618,
+        "78.6%":  preco_max - diff * 0.786,
+        "100%":   preco_min,
+        "161.8%": preco_min - diff * 0.618,
+    }
+    return niveis
+
+def calcular_distancias(preco, ema9=None, ma20=None, ma200=None, vwap=None):
+    """Calcula distância em pontos e % do preço a cada média."""
+    resultado = {}
+    medias = {"EMA9": ema9, "MA20": ma20, "MA200": ma200, "VWAP": vwap}
+    for nome, val in medias.items():
+        if val and val > 0:
+            dist_pts = preco - val
+            dist_pct = (dist_pts / val) * 100
+            posicao = "ACIMA" if dist_pts > 0 else "ABAIXO"
+            resultado[nome] = {
+                "valor": val,
+                "distancia_pts": round(abs(dist_pts), 2),
+                "distancia_pct": round(abs(dist_pct), 3),
+                "posicao": posicao
+            }
+    return resultado
+
+def calcular_risco_retorno(entrada, stop, alvo1, alvo2=None):
+    """Calcula R:R e valida se a operação tem qualidade mínima."""
+    risco = abs(entrada - stop)
+    retorno1 = abs(alvo1 - entrada)
+    rr1 = round(retorno1 / risco, 2) if risco > 0 else 0
+    resultado = {
+        "risco_pts": round(risco, 2),
+        "retorno_alvo1_pts": round(retorno1, 2),
+        "rr_alvo1": rr1,
+        "qualidade": "EXCELENTE" if rr1 >= 3 else "BOA" if rr1 >= 2 else "FRACA" if rr1 >= 1.5 else "RUIM"
+    }
+    if alvo2:
+        retorno2 = abs(alvo2 - entrada)
+        resultado["retorno_alvo2_pts"] = round(retorno2, 2)
+        resultado["rr_alvo2"] = round(retorno2 / risco, 2) if risco > 0 else 0
+    return resultado
+
+def calcular_score_confluencia(preco, sinal, ema9=None, ma20=None, ma200=None, vwap=None):
+    """
+    Calcula score de confluência das médias.
+    COMPRA: quanto mais médias abaixo do preço, maior o score.
+    VENDA: quanto mais médias acima do preço, maior o score.
+    Retorna: score (0-4), nivel (FORTE/MODERADO/FRACO), medias_alinhadas
+    """
+    pontos = 0
+    medias_alinhadas = []
+    medias = {"EMA9": ema9, "MA20": ma20, "MA200": ma200, "VWAP": vwap}
+
+    for nome, val in medias.items():
+        if val and val > 0:
+            if sinal == "COMPRA" and preco > val:
+                pontos += 1
+                medias_alinhadas.append(nome)
+            elif sinal == "VENDA" and preco < val:
+                pontos += 1
+                medias_alinhadas.append(nome)
+
+    nivel = "FORTE" if pontos >= 3 else "MODERADO" if pontos == 2 else "FRACO"
+    return {
+        "score": pontos,
+        "nivel": nivel,
+        "medias_alinhadas": medias_alinhadas,
+        "recomendacao": "OPERAR" if pontos >= 2 else "AGUARDAR"
+    }
+
+def formatar_calculos_para_prompt(preco, ema9=None, ma20=None, ma200=None, vwap=None,
+                                   minima=None, maxima=None, sinal_previsto=None):
+    """Monta bloco de cálculos para enriquecer o prompt da IA."""
+    linhas = ["\n=== CALCULOS MATEMATICOS ==="]
+
+    # Distâncias
+    dists = calcular_distancias(preco, ema9, ma20, ma200, vwap)
+    if dists:
+        linhas.append("Distâncias do preço às médias:")
+        for nome, d in dists.items():
+            linhas.append(f"  {nome}: {d['posicao']} por {d['distancia_pts']:.0f}pts ({d['distancia_pct']:.2f}%)")
+
+    # Fibonacci
+    if minima and maxima and minima > 0 and maxima > 0:
+        fibs = calcular_fibonacci(minima, maxima)
+        linhas.append(f"Fibonacci ({minima:.0f} → {maxima:.0f}):")
+        for nivel, val in fibs.items():
+            marker = " ← PRÓXIMO" if abs(preco - val) < (maxima - minima) * 0.05 else ""
+            linhas.append(f"  {nivel}: {val:.0f}{marker}")
+
+    # Confluência
+    if sinal_previsto and sinal_previsto in ["COMPRA", "VENDA"]:
+        conf = calcular_score_confluencia(preco, sinal_previsto, ema9, ma20, ma200, vwap)
+        linhas.append(f"Confluência ({sinal_previsto}): {conf['score']}/4 — {conf['nivel']}")
+        linhas.append(f"  Médias alinhadas: {', '.join(conf['medias_alinhadas']) if conf['medias_alinhadas'] else 'nenhuma'}")
+        linhas.append(f"  Recomendação: {conf['recomendacao']}")
+
+    return "\n".join(linhas)
+
 def formatar_indicadores(ticker, dados):
     """Formata os indicadores para incluir no prompt da IA."""
     if not dados:
@@ -892,6 +1001,91 @@ def failover_status():
     }
 
 
+
+# ── Integração Interna dos Bots (sem mensagens visíveis) ──────────────────────
+
+def consultar_sentimento_interno():
+    """
+    Busca o último sentimento de mercado do ProfitSentiBot — internamente,
+    sem enviar nenhuma mensagem visível ao usuário.
+    Retorna: string resumida ou None
+    """
+    try:
+        # Lê o arquivo de sentimento salvo pelo webhook_sentimento
+        sent_file = os.path.join(os.path.dirname(__file__), "ultimo_sentimento.json")
+        if os.path.exists(sent_file):
+            with open(sent_file) as f:
+                data = json.load(f)
+            idade_min = (time.time() - data.get("timestamp", 0)) / 60
+            if idade_min <= 120:  # só usa se tiver até 2h de idade
+                return data.get("resumo", None)
+    except Exception as e:
+        logger.error(f"consultar_sentimento_interno: {e}")
+    return None
+
+def consultar_estrategia_interna(leitura_tecnica, sentimento=""):
+    """
+    Consulta o ProfitEstrategia internamente para escolher a melhor estratégia.
+    Não envia mensagem — apenas retorna o dict da estratégia escolhida.
+    """
+    try:
+        return escolher_estrategia_local(leitura_tecnica, sentimento)
+    except Exception as e:
+        logger.error(f"consultar_estrategia_interna: {e}")
+        return {"estrategia_nome": "N/A", "estrategia_conteudo": "", "confianca": "N/A"}
+
+def consultar_historico_interno(chat_id, ativo=None):
+    """
+    Consulta o histórico de operações do ProfitSinal internamente.
+    Retorna: string com últimas 3 operações relevantes ou None
+    """
+    try:
+        return buscar_memoria(chat_id, ativo)
+    except Exception as e:
+        logger.error(f"consultar_historico_interno: {e}")
+    return None
+
+def salvar_sentimento_para_outros_bots(resumo_sentimento):
+    """
+    Salva o sentimento atual em arquivo para que ProfitAnalise possa ler.
+    Chamado pelo webhook_sentimento após gerar análise.
+    """
+    try:
+        sent_file = os.path.join(os.path.dirname(__file__), "ultimo_sentimento.json")
+        with open(sent_file, "w") as f:
+            json.dump({
+                "resumo": resumo_sentimento,
+                "timestamp": time.time()
+            }, f)
+    except Exception as e:
+        logger.error(f"salvar_sentimento_para_outros_bots: {e}")
+
+def extrair_valores_da_leitura(leitura_tecnica):
+    """
+    Extrai valores numéricos da leitura técnica (texto do OCR)
+    para alimentar os cálculos matemáticos.
+    """
+    import re
+    resultado = {}
+    padroes = {
+        "preco":   r"PRECO[:\s]+([0-9][\d\.,]+)",
+        "ema9":    r"EMA9[:\s]+([0-9][\d\.,]+)",
+        "ma20":    r"MA20[:\s]+([0-9][\d\.,]+)",
+        "ma200":   r"MA200[:\s]+([0-9][\d\.,]+)",
+        "vwap":    r"VWAP[:\s]+([0-9][\d\.,]+)",
+        "maxima":  r"MAXIMA[:\s]+([0-9][\d\.,]+)",
+        "minima":  r"MINIMA[:\s]+([0-9][\d\.,]+)",
+    }
+    for campo, padrao in padroes.items():
+        m = re.search(padrao, leitura_tecnica, re.IGNORECASE)
+        if m:
+            try:
+                val_str = m.group(1).replace(".", "").replace(",", ".")
+                resultado[campo] = float(val_str)
+            except Exception:
+                pass
+    return resultado
+
 def consenso_ia(prompt_tecnica, prompt_sinal, imagem_bytes=None):
     """Cruza GPT-4-omni + Gemini e retorna analise balanceada."""
     import concurrent.futures
@@ -1537,6 +1731,7 @@ def webhook_sentimento():
                 resposta = chamar_ia_rodizio(prompt)
                 if resposta:
                     msg_final = f"🔵 *Análise do Cenário*\n\n{resposta}\n\n_Análise via IA - não é recomendação de investimento_"
+                    salvar_sentimento_para_outros_bots(msg_final)  # integração interna
                     send_telegram(TOKEN_SENTI, chat_id, msg_final)
                 else:
                     send_telegram(TOKEN_SENTI, chat_id, "❌ Erro ao analisar. Tente novamente.")
@@ -2412,6 +2607,11 @@ def webhook_analise():
                 except Exception as e_b:
                     logger.error(f"cotacao_real: {e_b}")
 
+                # PASSO 2a-extra: Integração interna — sentimento do mercado (silencioso)
+                sentimento_interno = consultar_sentimento_interno()
+                if sentimento_interno:
+                    dados_reais += f"\nSentimento de mercado (ProfitSenti): {sentimento_interno}"
+
                 # PASSO 2b: Indicadores tecnicos via Yahoo Finance (EMA9, MA20, RSI14)
                 indicadores_txt = ""
                 try:
@@ -2422,6 +2622,24 @@ def webhook_analise():
                             dados_reais += indicadores_txt
                 except Exception as e_ind:
                     logger.error(f"indicadores_yahoo: {e_ind}")
+
+                # PASSO 2d-extra: Cálculos matemáticos automáticos (Fibonacci, R:R, Confluência)
+                try:
+                    vals = extrair_valores_da_leitura(leitura_tecnica or "")
+                    if vals.get("preco"):
+                        calculos_txt = formatar_calculos_para_prompt(
+                            preco   = vals.get("preco", 0),
+                            ema9    = vals.get("ema9"),
+                            ma20    = vals.get("ma20"),
+                            ma200   = vals.get("ma200"),
+                            vwap    = vals.get("vwap"),
+                            minima  = vals.get("minima"),
+                            maxima  = vals.get("maxima"),
+                        )
+                        if calculos_txt:
+                            dados_reais += calculos_txt
+                except Exception as e_calc:
+                    logger.error(f"calculos_matematicos: {e_calc}")
 
                 # PASSO 2e: Buscar na web para confirmar/enriquecer o ativo identificado
                 info_web_ativo = ""
