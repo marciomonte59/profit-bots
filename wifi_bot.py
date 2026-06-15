@@ -189,26 +189,41 @@ async def liberar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def wifi_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
+    if not stok:
+        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        return
     rpc(stok, "set", {"wireless": {"enable": True, "band": "2.4GHz"}})
     await update.message.reply_text("✅ WiFi 2.4GHz *LIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def wifi_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
+    if not stok:
+        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        return
     rpc(stok, "set", {"wireless": {"enable": False, "band": "2.4GHz"}})
     await update.message.reply_text("❌ WiFi 2.4GHz *DESLIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def wifi5_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
+    if not stok:
+        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        return
     rpc(stok, "set", {"wireless": {"enable": True, "band": "5GHz"}})
     await update.message.reply_text("✅ WiFi 5GHz *LIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def wifi5_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
+    if not stok:
+        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        return
     rpc(stok, "set", {"wireless": {"enable": False, "band": "5GHz"}})
     await update.message.reply_text("❌ WiFi 5GHz *DESLIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def reiniciar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
+    if not stok:
+        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        return
     rpc(stok, "do", {"device": {"reboot": None}})
     await update.message.reply_text("🔄 Roteador reiniciando... aguarde ~30s.")
 
@@ -242,7 +257,11 @@ async def agendar_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         h, m = map(int, ctx.args[0].split(":"))
-        ctx.job_queue.run_daily(desligar_job, time=datetime.time(hour=h, minute=m), chat_id=update.effective_chat.id)
+        import pytz
+        tz = pytz.timezone("America/Fortaleza")
+        ctx.job_queue.run_daily(desligar_job,
+            time=datetime.time(hour=h, minute=m, tzinfo=tz),
+            chat_id=update.effective_chat.id, name=f"off_{h}:{m}")
         await update.message.reply_text(f"✅ WiFi desliga todo dia às *{ctx.args[0]}*!", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro: {e}")
@@ -253,7 +272,11 @@ async def agendar_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         h, m = map(int, ctx.args[0].split(":"))
-        ctx.job_queue.run_daily(ligar_job, time=datetime.time(hour=h, minute=m), chat_id=update.effective_chat.id)
+        import pytz
+        tz = pytz.timezone("America/Fortaleza")
+        ctx.job_queue.run_daily(ligar_job,
+            time=datetime.time(hour=h, minute=m, tzinfo=tz),
+            chat_id=update.effective_chat.id, name=f"on_{h}:{m}")
         await update.message.reply_text(f"✅ WiFi liga todo dia às *{ctx.args[0]}*!", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro: {e}")
@@ -411,4 +434,4 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(botao))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_ia))
     print("✅ Bot WiFi + IA iniciado!")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
