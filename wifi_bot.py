@@ -88,11 +88,28 @@ def ip_externo():
         return "N/A"
 
 def listar_dispositivos(stok):
-    data = rpc(stok, "get", {"hosts_info": {"table": "host_info"}})
-    hosts = data.get("hosts_info", {}).get("host_info", [])
-    if not hosts:
-        hosts = data.get("result", {}).get("hosts_info", {}).get("host_info", [])
-    return hosts
+    # Tentar todos os endpoints conhecidos do TP-Link EC220-G5
+    tentativas = [
+        {"hosts_info": {"table": "host_info"}},
+        {"hosts_info": {"name": "host_info"}},
+        {"wireless": {"table": "associated_devices"}},
+        {"network": {"table": "client_list"}},
+    ]
+    for params in tentativas:
+        try:
+            data = rpc(stok, "get", params)
+            # Buscar lista em qualquer nível do JSON retornado
+            for chave in data:
+                val = data[chave]
+                if isinstance(val, dict):
+                    for subchave in val:
+                        if isinstance(val[subchave], list) and len(val[subchave]) > 0:
+                            return val[subchave]
+                elif isinstance(val, list) and len(val) > 0:
+                    return val
+        except Exception:
+            continue
+    return []
 
 def teclado_principal():
     return InlineKeyboardMarkup([
