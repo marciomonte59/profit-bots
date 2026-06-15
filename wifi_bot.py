@@ -1,27 +1,18 @@
-"""
-wifi_bot.py corrigido — TP-Link EC220-G5
-Correções:
-1. Login: EC220-G5 usa /cgi-bin/luci/login com stok retornado no JSON — não POST na raiz
-2. RPC: usa stok válido na URL após login
-3. Bloquear/liberar: usa MAC address via access_control com host_info
-4. WiFi on/off: endpoint correto para EC220-G5
-"""
-
 import os, logging, hashlib, requests, subprocess, datetime, json
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 TOKEN       = "8863713291:AAFM2lMJNWlXOVUln87MI5_43aJlcngt3ZM"
 ROUTER_IP   = os.environ.get("ROUTER_IP",   "192.168.200.1")
 ROUTER_PASS = os.environ.get("ROUTER_PASS", "rocha2022")
 CHAT_ID     = int(os.environ.get("CHAT_ID", "8255093111"))
+GROQ_KEY    = os.environ.get("GROQ_KEY", "")
 
 logging.basicConfig(level=logging.INFO)
 
-# ── Login correto — EC220-G5 retorna stok no JSON ────────────────────────────
+# ── Login roteador ────────────────────────────────────────────────────────────
 
 def get_stok():
-    """Faz login e retorna o token stok. Sem stok, nenhum comando funciona."""
     pwd_md5 = hashlib.md5(ROUTER_PASS.encode()).hexdigest()
     try:
         r = requests.post(
@@ -30,16 +21,12 @@ def get_stok():
             headers={"Referer": f"http://{ROUTER_IP}/"},
             timeout=8
         )
-        data = r.json()
-        stok = data.get("stok", "")
-        if stok:
-            return stok
+        return r.json().get("stok", "")
     except Exception as e:
         logging.error(f"get_stok: {e}")
-    return None
+        return None
 
 def rpc(stok, method, params):
-    """Executa comando no roteador usando stok válido."""
     if not stok:
         return {"error": "sem stok"}
     try:
@@ -53,7 +40,38 @@ def rpc(stok, method, params):
     except Exception as e:
         return {"error": str(e)}
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── IA — Groq LLaMA ──────────────────────────────────────────────────────────
+
+def ia(pergunta, contexto=""):
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": (
+                        "Você é um assistente de controle de rede WiFi TP-Link EC220-G5. "
+                        "Responda em português, de forma curta e direta. "
+                        "Quando o usuário pedir para executar uma ação, responda com a ação no formato: "
+                        "ACAO:wifi_on | ACAO:wifi_off | ACAO:wifi5_on | ACAO:wifi5_off | "
+                        "ACAO:dispositivos | ACAO:reiniciar | ACAO:status | "
+                        "ACAO:bloquear:NOME | ACAO:liberar:NOME | ACAO:agendar_off:HH:MM | ACAO:agendar_on:HH:MM. "
+                        "Se for só conversa ou pergunta, responda normalmente sem ACAO. "
+                        + (f"Contexto atual da rede: {contexto}" if contexto else "")
+                    )},
+                    {"role": "user", "content": pergunta}
+                ],
+                "temperature": 0.3,
+                "max_tokens": 300
+            },
+            timeout=15
+        )
+        return r.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Erro IA: {e}"
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def bateria_info():
     try:
@@ -69,63 +87,71 @@ def ip_externo():
     except:
         return "N/A"
 
-# ── COMANDOS ─────────────────────────────────────────────────────────────────
+def listar_dispositivos(stok):
+    data = rpc(stok, "get", {"hosts_info": {"table": "host_info"}})
+    hosts = data.get("hosts_info", {}).get("host_info", [])
+    if not hosts:
+        hosts = data.get("result", {}).get("hosts_info", {}).get("host_info", [])
+    return hosts
+
+def teclado_principal():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ WiFi 2.4G ON",  callback_data="wifi_on"),
+         InlineKeyboardButton("❌ WiFi 2.4G OFF", callback_data="wifi_off")],
+        [InlineKeyboardButton("✅ WiFi 5G ON",    callback_data="wifi5_on"),
+         InlineKeyboardButton("❌ WiFi 5G OFF",   callback_data="wifi5_off")],
+        [InlineKeyboardButton("📱 Dispositivos",  callback_data="dispositivos"),
+         InlineKeyboardButton("📊 Status",        callback_data="status")],
+        [InlineKeyboardButton("🔄 Reiniciar",     callback_data="reiniciar"),
+         InlineKeyboardButton("🌐 Meu IP",        callback_data="meuip")],
+    ])
+
+# ── COMANDOS ──────────────────────────────────────────────────────────────────
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📡 *Bot WiFi — TP-Link EC220-G5*\n\n"
-        "/status — Status geral\n"
-        "/dispositivos — Quem está conectado\n"
-        "/bloquear NOME — Bloquear da internet\n"
-        "/liberar NOME — Liberar acesso\n"
-        "/wifi\\_on — Ligar WiFi 2.4GHz\n"
-        "/wifi\\_off — Desligar WiFi 2.4GHz\n"
-        "/wifi5\\_on — Ligar WiFi 5GHz\n"
-        "/wifi5\\_off — Desligar WiFi 5GHz\n"
-        "/reiniciar — Reiniciar roteador\n"
-        "/agendar\\_off HH:MM — Desligar no horário\n"
-        "/agendar\\_on HH:MM — Ligar no horário\n"
-        "/cancelar — Cancelar agendamentos\n"
-        "/meuip — IP externo\n"
-        "/velocidade — Testar velocidade\n"
-        "/bateria — Bateria do celular\n"
-        "/screenshot — Capturar tela",
-        parse_mode="Markdown"
+        "Use os botões abaixo ou fale comigo em linguagem natural!\n\n"
+        "_Ex: \"desliga o wifi às 22h\", \"quem tá conectado?\", \"bloqueia o vizinho\"_",
+        parse_mode="Markdown",
+        reply_markup=teclado_principal()
     )
 
+async def menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📡 *Painel WiFi*", parse_mode="Markdown",
+        reply_markup=teclado_principal())
+
 async def status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Verificando...")
     stok = get_stok()
-    ip_ext = ip_externo()
-    bat = bateria_info()
-    roteador = f"✅ Online — token OK" if stok else "❌ Offline ou senha errada"
+    ip   = ip_externo()
+    bat  = bateria_info()
+    rot  = "✅ Online" if stok else "❌ Offline"
+    hosts = listar_dispositivos(stok) if stok else []
     await update.message.reply_text(
-        f"📡 *Status*\n\n{roteador}\n🌐 IP: `{ip_ext}`\n🔋 Bateria: {bat}\n"
-        f"🕐 {datetime.datetime.now().strftime('%d/%m/%Y %H:%M')}",
-        parse_mode="Markdown"
+        f"📡 *Status da Rede*\n\n"
+        f"Roteador: {rot}\n"
+        f"Dispositivos: {len(hosts)} conectados\n"
+        f"IP externo: `{ip}`\n"
+        f"🔋 Celular: {bat}\n"
+        f"🕐 {datetime.datetime.now().strftime('%d/%m %H:%M')}",
+        parse_mode="Markdown", reply_markup=teclado_principal()
     )
 
 async def dispositivos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Buscando...")
     stok = get_stok()
     if not stok:
         await update.message.reply_text("❌ Sem conexão com o roteador.")
         return
-    data = rpc(stok, "get", {"hosts_info": {"table": "host_info"}})
-    hosts = data.get("hosts_info", {}).get("host_info", [])
-    if not hosts:
-        # Tentar estrutura alternativa
-        hosts = data.get("result", {}).get("hosts_info", {}).get("host_info", [])
+    hosts = listar_dispositivos(stok)
     if hosts:
-        msg = f"📱 *{len(hosts)} dispositivo(s):*\n\n"
+        msg = f"📱 *{len(hosts)} dispositivo(s) conectados:*\n\n"
         for h in hosts[:20]:
             nome = h.get("hostname") or h.get("name") or "Desconhecido"
             ip   = h.get("ip") or ""
-            mac  = h.get("mac") or ""
-            msg += f"• {nome} `{ip}` `{mac}`\n"
+            msg += f"• {nome} — `{ip}`\n"
     else:
-        msg = "📱 Nenhum dispositivo encontrado ou estrutura diferente."
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg = "📱 Nenhum dispositivo encontrado."
+    await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def bloquear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -134,21 +160,15 @@ async def bloquear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     nome = " ".join(ctx.args)
     stok = get_stok()
     if not stok:
-        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        await update.message.reply_text("❌ Sem conexão.")
         return
-    # Buscar MAC pelo nome
-    data = rpc(stok, "get", {"hosts_info": {"table": "host_info"}})
-    hosts = data.get("hosts_info", {}).get("host_info", [])
-    mac = None
-    for h in hosts:
-        if nome.lower() in (h.get("hostname","") or h.get("name","")).lower():
-            mac = h.get("mac")
-            break
+    hosts = listar_dispositivos(stok)
+    mac = next((h.get("mac") for h in hosts if nome.lower() in (h.get("hostname","") or h.get("name","")).lower()), None)
     if not mac:
-        await update.message.reply_text(f"❌ Dispositivo '{nome}' não encontrado. Use /dispositivos para ver os nomes.")
+        await update.message.reply_text(f"❌ '{nome}' não encontrado. Use /dispositivos para ver os nomes.")
         return
     rpc(stok, "set", {"access_control": {"block_list": [{"mac": mac}]}})
-    await update.message.reply_text(f"🔒 *{nome}* bloqueado! (`{mac}`)", parse_mode="Markdown")
+    await update.message.reply_text(f"🔒 *{nome}* bloqueado!", parse_mode="Markdown")
 
 async def liberar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -157,58 +177,38 @@ async def liberar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     nome = " ".join(ctx.args)
     stok = get_stok()
     if not stok:
-        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        await update.message.reply_text("❌ Sem conexão.")
         return
-    data = rpc(stok, "get", {"hosts_info": {"table": "host_info"}})
-    hosts = data.get("hosts_info", {}).get("host_info", [])
-    mac = None
-    for h in hosts:
-        if nome.lower() in (h.get("hostname","") or h.get("name","")).lower():
-            mac = h.get("mac")
-            break
+    hosts = listar_dispositivos(stok)
+    mac = next((h.get("mac") for h in hosts if nome.lower() in (h.get("hostname","") or h.get("name","")).lower()), None)
     if not mac:
-        await update.message.reply_text(f"❌ Dispositivo '{nome}' não encontrado.")
+        await update.message.reply_text(f"❌ '{nome}' não encontrado.")
         return
     rpc(stok, "set", {"access_control": {"unblock_list": [{"mac": mac}]}})
-    await update.message.reply_text(f"✅ *{nome}* liberado! (`{mac}`)", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ *{nome}* liberado!", parse_mode="Markdown")
 
 async def wifi_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
-    if not stok:
-        await update.message.reply_text("❌ Sem conexão.")
-        return
     rpc(stok, "set", {"wireless": {"enable": True, "band": "2.4GHz"}})
-    await update.message.reply_text("✅ WiFi 2.4GHz *LIGADO*!", parse_mode="Markdown")
+    await update.message.reply_text("✅ WiFi 2.4GHz *LIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def wifi_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
-    if not stok:
-        await update.message.reply_text("❌ Sem conexão.")
-        return
     rpc(stok, "set", {"wireless": {"enable": False, "band": "2.4GHz"}})
-    await update.message.reply_text("❌ WiFi 2.4GHz *DESLIGADO*!", parse_mode="Markdown")
+    await update.message.reply_text("❌ WiFi 2.4GHz *DESLIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def wifi5_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
-    if not stok:
-        await update.message.reply_text("❌ Sem conexão.")
-        return
     rpc(stok, "set", {"wireless": {"enable": True, "band": "5GHz"}})
-    await update.message.reply_text("✅ WiFi 5GHz *LIGADO*!", parse_mode="Markdown")
+    await update.message.reply_text("✅ WiFi 5GHz *LIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def wifi5_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
-    if not stok:
-        await update.message.reply_text("❌ Sem conexão.")
-        return
     rpc(stok, "set", {"wireless": {"enable": False, "band": "5GHz"}})
-    await update.message.reply_text("❌ WiFi 5GHz *DESLIGADO*!", parse_mode="Markdown")
+    await update.message.reply_text("❌ WiFi 5GHz *DESLIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
 
 async def reiniciar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
-    if not stok:
-        await update.message.reply_text("❌ Sem conexão.")
-        return
     rpc(stok, "do", {"device": {"reboot": None}})
     await update.message.reply_text("🔄 Roteador reiniciando... aguarde ~30s.")
 
@@ -228,7 +228,7 @@ async def screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Erro: {e}")
 
 async def velocidade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Testando... aguarde ~30s")
+    await update.message.reply_text("⏳ Testando velocidade... aguarde ~30s")
     try:
         subprocess.run(["pip", "install", "speedtest-cli", "-q"], timeout=30)
         r = subprocess.run(["speedtest-cli", "--simple"], capture_output=True, text=True, timeout=60)
@@ -242,11 +242,7 @@ async def agendar_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         h, m = map(int, ctx.args[0].split(":"))
-        ctx.job_queue.run_daily(
-            desligar_wifi_job,
-            time=datetime.time(hour=h, minute=m),
-            chat_id=update.effective_chat.id
-        )
+        ctx.job_queue.run_daily(desligar_job, time=datetime.time(hour=h, minute=m), chat_id=update.effective_chat.id)
         await update.message.reply_text(f"✅ WiFi desliga todo dia às *{ctx.args[0]}*!", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro: {e}")
@@ -257,11 +253,7 @@ async def agendar_on(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     try:
         h, m = map(int, ctx.args[0].split(":"))
-        ctx.job_queue.run_daily(
-            ligar_wifi_job,
-            time=datetime.time(hour=h, minute=m),
-            chat_id=update.effective_chat.id
-        )
+        ctx.job_queue.run_daily(ligar_job, time=datetime.time(hour=h, minute=m), chat_id=update.effective_chat.id)
         await update.message.reply_text(f"✅ WiFi liga todo dia às *{ctx.args[0]}*!", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro: {e}")
@@ -271,25 +263,135 @@ async def cancelar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         job.schedule_removal()
     await update.message.reply_text("✅ Agendamentos cancelados!")
 
-async def desligar_wifi_job(ctx: ContextTypes.DEFAULT_TYPE):
+async def desligar_job(ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
     if stok:
         rpc(stok, "set", {"wireless": {"enable": False, "band": "2.4GHz"}})
         rpc(stok, "set", {"wireless": {"enable": False, "band": "5GHz"}})
     await ctx.bot.send_message(chat_id=ctx.job.chat_id, text="🌙 WiFi desligado automaticamente!")
 
-async def ligar_wifi_job(ctx: ContextTypes.DEFAULT_TYPE):
+async def ligar_job(ctx: ContextTypes.DEFAULT_TYPE):
     stok = get_stok()
     if stok:
         rpc(stok, "set", {"wireless": {"enable": True, "band": "2.4GHz"}})
         rpc(stok, "set", {"wireless": {"enable": True, "band": "5GHz"}})
     await ctx.bot.send_message(chat_id=ctx.job.chat_id, text="☀️ WiFi ligado automaticamente!")
 
+# ── IA — mensagem livre ───────────────────────────────────────────────────────
+
+async def mensagem_ia(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    texto = update.message.text
+    await update.message.reply_text("🤖 Pensando...")
+
+    # Contexto atual da rede para a IA
+    stok = get_stok()
+    hosts = listar_dispositivos(stok) if stok else []
+    contexto = f"{len(hosts)} dispositivos conectados" if hosts else "roteador offline"
+
+    resposta = ia(texto, contexto)
+
+    # IA retornou uma ação?
+    if "ACAO:" in resposta:
+        linha = [l for l in resposta.split("\n") if "ACAO:" in l][0]
+        acao = linha.split("ACAO:")[1].strip()
+
+        if acao == "wifi_on":
+            rpc(stok, "set", {"wireless": {"enable": True, "band": "2.4GHz"}})
+            await update.message.reply_text("✅ WiFi 2.4GHz ligado!", reply_markup=teclado_principal())
+        elif acao == "wifi_off":
+            rpc(stok, "set", {"wireless": {"enable": False, "band": "2.4GHz"}})
+            await update.message.reply_text("❌ WiFi 2.4GHz desligado!", reply_markup=teclado_principal())
+        elif acao == "wifi5_on":
+            rpc(stok, "set", {"wireless": {"enable": True, "band": "5GHz"}})
+            await update.message.reply_text("✅ WiFi 5GHz ligado!", reply_markup=teclado_principal())
+        elif acao == "wifi5_off":
+            rpc(stok, "set", {"wireless": {"enable": False, "band": "5GHz"}})
+            await update.message.reply_text("❌ WiFi 5GHz desligado!", reply_markup=teclado_principal())
+        elif acao == "dispositivos":
+            msg = f"📱 *{len(hosts)} dispositivos:*\n\n" + \
+                  "".join(f"• {h.get('hostname') or h.get('name','?')} — `{h.get('ip','')}`\n" for h in hosts[:20])
+            await update.message.reply_text(msg or "Nenhum encontrado.", parse_mode="Markdown")
+        elif acao == "status":
+            await update.message.reply_text(
+                f"📡 Roteador: {'✅ Online' if stok else '❌ Offline'}\n"
+                f"📱 Dispositivos: {len(hosts)}\n🌐 IP: `{ip_externo()}`",
+                parse_mode="Markdown", reply_markup=teclado_principal())
+        elif acao == "reiniciar":
+            rpc(stok, "do", {"device": {"reboot": None}})
+            await update.message.reply_text("🔄 Roteador reiniciando...")
+        elif acao.startswith("bloquear:"):
+            nome = acao.split("bloquear:")[1]
+            mac = next((h.get("mac") for h in hosts if nome.lower() in (h.get("hostname","") or "").lower()), None)
+            if mac:
+                rpc(stok, "set", {"access_control": {"block_list": [{"mac": mac}]}})
+                await update.message.reply_text(f"🔒 *{nome}* bloqueado!", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"❌ '{nome}' não encontrado. Use /dispositivos.")
+        elif acao.startswith("liberar:"):
+            nome = acao.split("liberar:")[1]
+            mac = next((h.get("mac") for h in hosts if nome.lower() in (h.get("hostname","") or "").lower()), None)
+            if mac:
+                rpc(stok, "set", {"access_control": {"unblock_list": [{"mac": mac}]}})
+                await update.message.reply_text(f"✅ *{nome}* liberado!", parse_mode="Markdown")
+            else:
+                await update.message.reply_text(f"❌ '{nome}' não encontrado.")
+        elif acao.startswith("agendar_off:"):
+            horario = acao.split("agendar_off:")[1]
+            h2, m2 = map(int, horario.split(":"))
+            ctx.job_queue.run_daily(desligar_job, time=datetime.time(hour=h2, minute=m2), chat_id=update.effective_chat.id)
+            await update.message.reply_text(f"✅ WiFi desliga todo dia às *{horario}*!", parse_mode="Markdown")
+        elif acao.startswith("agendar_on:"):
+            horario = acao.split("agendar_on:")[1]
+            h2, m2 = map(int, horario.split(":"))
+            ctx.job_queue.run_daily(ligar_job, time=datetime.time(hour=h2, minute=m2), chat_id=update.effective_chat.id)
+            await update.message.reply_text(f"✅ WiFi liga todo dia às *{horario}*!", parse_mode="Markdown")
+    else:
+        # Só resposta em linguagem natural
+        await update.message.reply_text(resposta, reply_markup=teclado_principal())
+
+# ── Botões inline ─────────────────────────────────────────────────────────────
+
+async def botao(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    stok = get_stok()
+
+    if query.data == "wifi_on":
+        rpc(stok, "set", {"wireless": {"enable": True, "band": "2.4GHz"}})
+        await query.edit_message_text("✅ WiFi 2.4GHz *LIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
+    elif query.data == "wifi_off":
+        rpc(stok, "set", {"wireless": {"enable": False, "band": "2.4GHz"}})
+        await query.edit_message_text("❌ WiFi 2.4GHz *DESLIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
+    elif query.data == "wifi5_on":
+        rpc(stok, "set", {"wireless": {"enable": True, "band": "5GHz"}})
+        await query.edit_message_text("✅ WiFi 5GHz *LIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
+    elif query.data == "wifi5_off":
+        rpc(stok, "set", {"wireless": {"enable": False, "band": "5GHz"}})
+        await query.edit_message_text("❌ WiFi 5GHz *DESLIGADO*!", parse_mode="Markdown", reply_markup=teclado_principal())
+    elif query.data == "dispositivos":
+        hosts = listar_dispositivos(stok) if stok else []
+        msg = f"📱 *{len(hosts)} dispositivos:*\n\n" + \
+              "".join(f"• {h.get('hostname') or h.get('name','?')} — `{h.get('ip','')}`\n" for h in hosts[:20])
+        await query.edit_message_text(msg or "Nenhum encontrado.", parse_mode="Markdown", reply_markup=teclado_principal())
+    elif query.data == "status":
+        hosts = listar_dispositivos(stok) if stok else []
+        await query.edit_message_text(
+            f"📡 Roteador: {'✅ Online' if stok else '❌ Offline'}\n"
+            f"📱 Dispositivos: {len(hosts)}\n"
+            f"🌐 IP: `{ip_externo()}`\n🔋 {bateria_info()}",
+            parse_mode="Markdown", reply_markup=teclado_principal())
+    elif query.data == "reiniciar":
+        rpc(stok, "do", {"device": {"reboot": None}})
+        await query.edit_message_text("🔄 Reiniciando... aguarde ~30s.", reply_markup=teclado_principal())
+    elif query.data == "meuip":
+        await query.edit_message_text(f"🌐 IP: `{ip_externo()}`", parse_mode="Markdown", reply_markup=teclado_principal())
+
 # ── MAIN ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start",        start))
+    app.add_handler(CommandHandler("menu",         menu))
     app.add_handler(CommandHandler("status",       status))
     app.add_handler(CommandHandler("dispositivos", dispositivos))
     app.add_handler(CommandHandler("bloquear",     bloquear))
@@ -306,5 +408,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("agendar_off",  agendar_off))
     app.add_handler(CommandHandler("agendar_on",   agendar_on))
     app.add_handler(CommandHandler("cancelar",     cancelar))
-    print("✅ Bot WiFi Controller iniciado!")
+    app.add_handler(CallbackQueryHandler(botao))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensagem_ia))
+    print("✅ Bot WiFi + IA iniciado!")
     app.run_polling()
