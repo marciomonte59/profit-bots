@@ -6,7 +6,7 @@ TOKEN       = "8863713291:AAFM2lMJNWlXOVUln87MI5_43aJlcngt3ZM"
 ROUTER_IP   = os.environ.get("ROUTER_IP",   "192.168.200.1")
 ROUTER_PASS = os.environ.get("ROUTER_PASS", "rocha2022")
 CHAT_ID     = int(os.environ.get("CHAT_ID", "8255093111"))
-GROQ_KEY    = os.environ.get("GROQ_KEY", "")
+GROQ_KEY    = os.environ.get("GROQ_KEY", "GROQ_KEY_AQUI")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -262,11 +262,22 @@ async def screenshot(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def velocidade(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Testando velocidade... aguarde ~30s")
     try:
-        subprocess.run(["pip", "install", "speedtest-cli", "-q"], timeout=30)
-        r = subprocess.run(["speedtest-cli", "--simple"], capture_output=True, text=True, timeout=60)
-        await update.message.reply_text(f"🚀 *Velocidade:*\n\n{r.stdout}", parse_mode="Markdown")
+        subprocess.run(["pip", "install", "speedtest-cli", "-q"], timeout=60, capture_output=True)
+        r = subprocess.run(["speedtest-cli", "--simple"], capture_output=True, text=True, timeout=90)
+        resultado = r.stdout.strip() or r.stderr.strip() or "Sem resultado"
+        await update.message.reply_text(f"🚀 *Velocidade:*\n\n{resultado}", parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Erro: {e}")
+
+async def debug(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Mostra resposta bruta do roteador — para diagnosticar dispositivos"""
+    stok = get_stok()
+    if not stok:
+        await update.message.reply_text("❌ Sem conexão com o roteador.")
+        return
+    resultado = rpc(stok, "get", {"hosts_info": {"table": "host_info"}})
+    texto = json.dumps(resultado, ensure_ascii=False, indent=2)[:3000]
+    await update.message.reply_text(f"🔍 Resposta bruta:\n\n<pre>{texto}</pre>", parse_mode="HTML")
 
 async def agendar_off(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -445,6 +456,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("bateria",      bateria_cmd))
     app.add_handler(CommandHandler("screenshot",   screenshot))
     app.add_handler(CommandHandler("velocidade",   velocidade))
+    app.add_handler(CommandHandler("debug",        debug))
     app.add_handler(CommandHandler("agendar_off",  agendar_off))
     app.add_handler(CommandHandler("agendar_on",   agendar_on))
     app.add_handler(CommandHandler("cancelar",     cancelar))
